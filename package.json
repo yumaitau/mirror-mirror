@@ -2,11 +2,20 @@
   "name": "mirror-mirror",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24.15.0"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run build:web && npm run build:worker",
+    "build:web": "next build",
+    "build:worker": "tsc -p tsconfig.worker.json",
     "start": "next start",
-    "lint": "eslint"
+    "worker": "node dist-worker/worker/index.js",
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:docker-permissions": "tests/docker-permissions.sh",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "next": "16.2.10",
@@ -15,12 +24,13 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "24.13.3",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "4.1.10"
   }
 }

@@ -1,0 +1,14 @@
+.git
+.gitignore
+.codegraph
+.next
+dist-worker
+node_modules
+mirror-data
+coverage
+.env*
+*.log
+*.tsbuildinfo
+.playwright-cli
+docs
+tests

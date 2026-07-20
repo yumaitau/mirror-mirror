@@ -1,0 +1,53 @@
+services:
+  web:
+    image: mirror-mirror:local
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    environment: &mirrormirror-environment
+      GITHUB_ORG: ${GITHUB_ORG}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      MIRROR_DATA_DIR: /data
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}
+      GIT_OPERATION_TIMEOUT_MINUTES: ${GIT_OPERATION_TIMEOUT_MINUTES:-60}
+    volumes:
+      - type: bind
+        source: ${MIRROR_HOST_PATH:-./mirror-data}
+        target: /data
+    ports:
+      - ${MIRRORMIRROR_PORT:-3000}:3000
+    healthcheck:
+      test:
+        - CMD
+        - setpriv
+        - --reuid=node
+        - --regid=node
+        - --init-groups
+        - --
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/api/health/web').then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    image: mirror-mirror:local
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    command: ["node", "dist-worker/worker/index.js"]
+    environment: *mirrormirror-environment
+    volumes:
+      - type: bind
+        source: ${MIRROR_HOST_PATH:-./mirror-data}
+        target: /data
+    healthcheck:
+      test: ["CMD", "setpriv", "--reuid=node", "--regid=node", "--init-groups", "--", "node", "dist-worker/worker/index.js", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
