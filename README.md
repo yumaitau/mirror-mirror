@@ -11,6 +11,7 @@ MirrorMirror keeps durable bare Git mirrors for every repository a token can rea
   - **Contents: read**
 
 The token must be able to list the organization repositories it is expected to mirror, including private repositories.
+The Docker image includes Git and Git LFS; neither tool needs to be installed on the host for the Compose workflow.
 
 ## Configure and start
 
@@ -39,7 +40,7 @@ docker compose down
 | `MIRROR_HOST_PATH` | No | `./mirror-data` | Host directory bind-mounted read/write at `/data` by both services. |
 | `MIRRORMIRROR_PORT` | No | `3000` | Host port published by the web service. |
 | `SYNC_INTERVAL_MINUTES` | No | `60` | Whole minutes between completion of one scheduled cycle and the next due cycle. |
-| `GIT_OPERATION_TIMEOUT_MINUTES` | No | `60` | Whole-minute timeout for one Git clone or update command. |
+| `GIT_OPERATION_TIMEOUT_MINUTES` | No | `60` | Whole-minute timeout for one Git or Git LFS command. |
 
 All duration values must be positive whole numbers. Rotate a credential by updating `GITHUB_TOKEN` in `.env` and recreating both services:
 
@@ -47,7 +48,7 @@ All duration values must be positive whole numbers. Rotate a credential by updat
 docker compose up --detach --force-recreate web worker
 ```
 
-Credentials are passed to Git through an askpass helper, not stored in Git remotes or shown by the dashboard. Treat Compose configuration and the host environment as sensitive because they contain the token.
+Credentials are passed to Git through an askpass helper, not stored in Git remotes or shown by the dashboard. Git LFS transfers are pinned to the token-free GitHub LFS endpoint derived from the validated repository clone URL, so a committed `.lfsconfig` cannot redirect the organization token. Treat Compose configuration and the host environment as sensitive because they contain the token.
 
 ## Data and synchronization behavior
 
@@ -62,7 +63,9 @@ mirror-data/
 
 `mirrormirror.db` persists discovery state, queue work, attempt/success timestamps, the last successfully measured mirror size, worker heartbeat, and the next schedule. Repository directories are bare mirrors named by stable numeric GitHub repository ID, so a rename does not move or reclone the mirror.
 
-The first successful discovery queues new repositories. Scheduled cycles use a fixed repository list and run serially. Existing mirrors update in place with `remote update --prune`; removed upstream refs are pruned. After Git succeeds, the worker measures the bare repository's apparent file bytes without following symbolic links and persists that value with the success state. Dashboard polling reads the stored value rather than scanning mirror directories. A repository no longer returned by discovery remains on disk and appears as **Unavailable** rather than being deleted. Recreating either container against the same host directory preserves files, queued work, timestamps, measured sizes, and schedule.
+The first successful discovery queues new repositories. Scheduled cycles use a fixed repository list and run serially. Existing mirrors update in place with `remote update --prune`; removed upstream refs are pruned. After the Git update, the worker downloads every Git LFS payload referenced by any commit reachable from any mirrored ref. Previously fetched LFS payloads are retained even when their upstream ref is later removed; MirrorMirror never runs LFS pruning or garbage collection.
+
+A repository is healthy only when both the Git update and the all-ref LFS fetch succeed. After both complete, the worker measures the bare repository's apparent file bytes, including its LFS object storage, without following symbolic links and persists that value with the success state. A failed LFS fetch retains the last successful timestamp, measured size, Git data, and previously fetched LFS payloads while exposing the attempt through the existing failed status and sanitized error. Dashboard polling reads stored state rather than scanning mirror directories. A repository no longer returned by discovery remains on disk and appears as **Unavailable** rather than being deleted. Recreating either container against the same host directory preserves files, queued work, timestamps, measured sizes, LFS payloads, and schedule.
 
 Use **Sync now** on one row or **Sync all** in the dashboard to queue an early synchronization. Requests are durable even while the worker is offline. Active rows show **Queued** or **Synchronizing** and cannot be queued twice.
 
@@ -81,7 +84,8 @@ The web health endpoint is `/api/health/web`. The worker has a distinct durable 
 
 ## Limitations
 
-- Mirrors are Git bare repositories only. Git LFS objects are not fetched.
+- Git LFS payloads are retained without automatic pruning, quotas, or deduplication, so storage use can continue growing after upstream refs are removed.
+- Automated restore, checkout, push-back, and LFS serving workflows are not included; MirrorMirror stores recovery material but does not expose it as an LFS server.
 - GitHub release assets, issues, pull-request metadata, Actions artifacts, packages, wikis, and other non-Git repository data are not mirrored.
 - Removed or inaccessible repositories are retained indefinitely; cleanup is an operator decision.
 - Synchronization is serial. Large organizations whose full cycle regularly exceeds the interval may need bounded parallelism in a future version.
@@ -90,7 +94,7 @@ The web health endpoint is `/api/health/web`. The worker has a distinct durable 
 
 ## Local development
 
-This project requires Node.js `24.15.0` or newer.
+This project requires Node.js `24.15.0` or newer, Git, and Git LFS when the worker runs directly outside Docker.
 
 ```bash
 npm ci
@@ -112,5 +116,6 @@ npm test -- --reporter=dot
 npm run typecheck
 npm run lint
 npm run build
+npm run test:git-lfs-container
 npm run test:docker-permissions
 ```

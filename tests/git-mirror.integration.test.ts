@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import {
   access,
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -14,14 +15,90 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { syncMirror } from "../lib/git-mirror";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
+const originalPath = process.env.PATH;
+const originalGitConfigCount = process.env.GIT_CONFIG_COUNT;
+const originalGitConfigKey = process.env.GIT_CONFIG_KEY_0;
+const originalGitConfigValue = process.env.GIT_CONFIG_VALUE_0;
+
+const LFS_OBJECT_ID = "a".repeat(64);
+
+async function installGitLfsFixture(): Promise<void> {
+  const directory = await temporaryDirectory();
+  const executable = path.join(directory, "git-lfs");
+  await writeFile(
+    executable,
+    `#!/bin/sh
+set -eu
+
+test "$#" -eq 3
+test "$1" = "fetch"
+test "$2" = "--all"
+test "$3" = "origin"
+
+lfs_url="$(git config --get lfs.url)"
+case "$lfs_url" in
+  file://*|https://github.com/*.git/info/lfs) ;;
+  *) echo "unexpected LFS URL" >&2; exit 2 ;;
+esac
+
+if [ -n "\${MIRRORMIRROR_LFS_LOG:-}" ]; then
+  printf '%s\n' "$lfs_url" >> "$MIRRORMIRROR_LFS_LOG"
+fi
+
+if [ "\${MIRRORMIRROR_LFS_MODE:-success}" = "failure" ]; then
+  printf 'LFS failed with %s at %s via https://x-access-token:%s@github.com/YumaIT/example.git\n' \
+    "$GITHUB_TOKEN" "\${MIRRORMIRROR_LFS_ERROR_PATH:-unknown}" "$GITHUB_TOKEN" >&2
+  exit 1
+fi
+
+if [ "\${MIRRORMIRROR_LFS_MODE:-success}" = "hang" ]; then
+  : > "$MIRRORMIRROR_LFS_STARTED"
+  while :; do sleep 1; done
+fi
+
+object_dir="$PWD/lfs/objects/aa/aa"
+mkdir -p "$object_dir"
+if [ ! -f "$object_dir/${LFS_OBJECT_ID}" ]; then
+  printf 'fixture-lfs-payload' > "$object_dir/${LFS_OBJECT_ID}"
+fi
+`,
+  );
+  await chmod(executable, 0o755);
+  process.env.PATH = `${directory}${path.delimiter}${originalPath ?? ""}`;
+}
+
+function restoreEnvironmentValue(
+  name: string,
+  originalValue: string | undefined,
+): void {
+  if (originalValue === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = originalValue;
+  }
+}
+
+async function waitForPath(filePath: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(filePath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}.`);
+}
 
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "mirror-git-test-"));
@@ -68,7 +145,19 @@ async function apparentSize(root: string): Promise<number> {
   return total;
 }
 
+beforeEach(async () => {
+  await installGitLfsFixture();
+});
+
 afterEach(async () => {
+  restoreEnvironmentValue("PATH", originalPath);
+  restoreEnvironmentValue("GIT_CONFIG_COUNT", originalGitConfigCount);
+  restoreEnvironmentValue("GIT_CONFIG_KEY_0", originalGitConfigKey);
+  restoreEnvironmentValue("GIT_CONFIG_VALUE_0", originalGitConfigValue);
+  delete process.env.MIRRORMIRROR_LFS_LOG;
+  delete process.env.MIRRORMIRROR_LFS_MODE;
+  delete process.env.MIRRORMIRROR_LFS_ERROR_PATH;
+  delete process.env.MIRRORMIRROR_LFS_STARTED;
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true }),
@@ -77,6 +166,180 @@ afterEach(async () => {
 });
 
 describe("Git mirror integration", () => {
+  it.each([
+    "https://x-access-token:stolen@github.com/YumaIT/example.git",
+    "https://example.com/YumaIT/example.git",
+    "ssh://git@github.com/YumaIT/example.git",
+  ])("rejects the unsafe clone URL %s before creating mirror state", async (cloneUrl) => {
+    const root = await temporaryDirectory();
+
+    await expect(
+      syncMirror(
+        {
+          repositoryId: 40,
+          fullName: "YumaIT/example",
+          cloneUrl,
+          mirrorPath: path.join(root, "mirrors", "40.git"),
+        },
+        { dataDir: root, token: "secret-token", gitOperationTimeoutMs: 10_000 },
+      ),
+    ).rejects.toThrow("unsafe repository clone URL");
+    await expect(access(path.join(root, "mirrors"))).rejects.toThrow();
+  });
+
+  it("derives the trusted GitHub LFS endpoint before synchronization", async () => {
+    const root = await temporaryDirectory();
+    const upstream = await createUpstream(root);
+    const cloneUrl = "https://github.com/YumaIT/example.git";
+    const lfsLog = path.join(root, "lfs-urls.log");
+    process.env.MIRRORMIRROR_LFS_LOG = lfsLog;
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = `url.${pathToFileURL(upstream).href}.insteadOf`;
+    process.env.GIT_CONFIG_VALUE_0 = cloneUrl;
+
+    await syncMirror(
+      {
+        repositoryId: 41,
+        fullName: "YumaIT/example",
+        cloneUrl,
+        mirrorPath: path.join(root, "mirrors", "41.git"),
+      },
+      { dataDir: root, token: "secret-token", gitOperationTimeoutMs: 10_000 },
+    );
+
+    expect((await readFile(lfsLog, "utf8")).trim()).toBe(
+      `${cloneUrl}/info/lfs`,
+    );
+  });
+
+  it("pins the local LFS endpoint and retains fetched payloads", async () => {
+    const root = await temporaryDirectory();
+    const upstream = await createUpstream(root);
+    const mirrorPath = path.join(root, "mirrors", "42.git");
+    const lfsLog = path.join(root, "lfs-urls.log");
+    process.env.MIRRORMIRROR_LFS_LOG = lfsLog;
+    const repository = {
+      repositoryId: 42,
+      fullName: "YumaIT/example",
+      cloneUrl: upstream,
+      mirrorPath,
+    };
+    const config = {
+      dataDir: root,
+      token: "secret-token",
+      gitOperationTimeoutMs: 10_000,
+    };
+
+    const initialSize = await syncMirror(repository, config);
+    const fixtureObject = path.join(
+      mirrorPath,
+      "lfs",
+      "objects",
+      "aa",
+      "aa",
+      LFS_OBJECT_ID,
+    );
+    expect(await readFile(fixtureObject, "utf8")).toBe("fixture-lfs-payload");
+    expect(initialSize).toBe(await apparentSize(mirrorPath));
+    expect((await readFile(lfsLog, "utf8")).trim()).toBe(
+      pathToFileURL(upstream).href,
+    );
+
+    const retainedObject = path.join(
+      mirrorPath,
+      "lfs",
+      "objects",
+      "bb",
+      "bb",
+      "retained",
+    );
+    await mkdir(path.dirname(retainedObject), { recursive: true });
+    await writeFile(retainedObject, "retain-me");
+
+    const updatedSize = await syncMirror(repository, config);
+
+    expect(await readFile(retainedObject, "utf8")).toBe("retain-me");
+    expect(updatedSize).toBe(await apparentSize(mirrorPath));
+  });
+
+  it("preserves fetched payloads and redacts a failed LFS fetch", async () => {
+    const root = await temporaryDirectory();
+    const upstream = await createUpstream(root);
+    const mirrorPath = path.join(root, "mirrors", "44.git");
+    const repository = {
+      repositoryId: 44,
+      fullName: "YumaIT/failure",
+      cloneUrl: upstream,
+      mirrorPath,
+    };
+    const config = {
+      dataDir: root,
+      token: "secret-token",
+      gitOperationTimeoutMs: 10_000,
+    };
+    await syncMirror(repository, config);
+    const fixtureObject = path.join(
+      mirrorPath,
+      "lfs",
+      "objects",
+      "aa",
+      "aa",
+      LFS_OBJECT_ID,
+    );
+    process.env.MIRRORMIRROR_LFS_MODE = "failure";
+    process.env.MIRRORMIRROR_LFS_ERROR_PATH = root;
+
+    const message = await syncMirror(repository, config).then(
+      () => "",
+      (error: unknown) => (error as Error).message,
+    );
+
+    expect(message).toContain("Git operation failed");
+    expect(message).not.toContain(config.token);
+    expect(message).not.toContain(root);
+    expect(message).not.toContain("x-access-token:secret-token");
+    expect(await readFile(fixtureObject, "utf8")).toBe("fixture-lfs-payload");
+  });
+
+  it("aborts an active LFS fetch without removing fetched payloads", async () => {
+    const root = await temporaryDirectory();
+    const upstream = await createUpstream(root);
+    const mirrorPath = path.join(root, "mirrors", "45.git");
+    const repository = {
+      repositoryId: 45,
+      fullName: "YumaIT/abort",
+      cloneUrl: upstream,
+      mirrorPath,
+    };
+    const config = {
+      dataDir: root,
+      token: "secret-token",
+      gitOperationTimeoutMs: 10_000,
+    };
+    await syncMirror(repository, config);
+    const fixtureObject = path.join(
+      mirrorPath,
+      "lfs",
+      "objects",
+      "aa",
+      "aa",
+      LFS_OBJECT_ID,
+    );
+    const startedPath = path.join(root, "lfs-started");
+    process.env.MIRRORMIRROR_LFS_MODE = "hang";
+    process.env.MIRRORMIRROR_LFS_STARTED = startedPath;
+    const controller = new AbortController();
+
+    const synchronization = syncMirror(repository, config, {
+      signal: controller.signal,
+    });
+    await waitForPath(startedPath);
+    controller.abort();
+
+    await expect(synchronization).rejects.toThrow("Git operation aborted");
+    expect(await readFile(fixtureObject, "utf8")).toBe("fixture-lfs-payload");
+  });
+
   it("creates a bare mirror and updates every ref in place", async () => {
     const root = await temporaryDirectory();
     const upstream = await createUpstream(root);

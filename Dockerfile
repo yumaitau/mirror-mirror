@@ -18,7 +18,7 @@ ENV NODE_ENV=production \
     PORT=3000
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git ca-certificates \
+    && apt-get install --yes --no-install-recommends git git-lfs ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

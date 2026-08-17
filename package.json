@@ -15,6 +15,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:docker-permissions": "tests/docker-permissions.sh",
+    "test:git-lfs-container": "tests/git-lfs-container.sh",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

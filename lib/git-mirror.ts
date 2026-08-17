@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { SyncJob } from "./contracts";
 import { sanitizeError } from "./errors";
@@ -18,6 +19,43 @@ export interface GitMirrorOptions {
 }
 
 const MAX_STDERR_LENGTH = 16_000;
+
+function trustedLfsUrl(cloneUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(cloneUrl);
+  } catch {
+    if (!path.isAbsolute(cloneUrl)) {
+      throw new Error("Refusing an unsafe repository clone URL.");
+    }
+    return pathToFileURL(cloneUrl).href;
+  }
+
+  if (
+    url.protocol === "file:" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.search === "" &&
+    url.hash === ""
+  ) {
+    return url.href;
+  }
+
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "github.com" ||
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    !/^\/[^/]+\/[^/]+\.git$/.test(url.pathname)
+  ) {
+    throw new Error("Refusing an unsafe repository clone URL.");
+  }
+
+  return `${url.href}/info/lfs`;
+}
 
 function runGit(
   args: readonly string[],
@@ -175,6 +213,7 @@ export async function syncMirror(
   let temporaryPath: string | undefined;
 
   try {
+    const lfsUrl = trustedLfsUrl(repository.cloneUrl);
     const paths = clonePaths(repository, config.dataDir);
     finalPath = paths.finalPath;
     temporaryPath = paths.temporaryPath;
@@ -203,6 +242,22 @@ export async function syncMirror(
       );
       renameSync(temporaryPath, finalPath);
     }
+
+    await runGit(
+      [
+        "-C",
+        finalPath,
+        "-c",
+        `lfs.url=${lfsUrl}`,
+        "lfs",
+        "fetch",
+        "--all",
+        "origin",
+      ],
+      config,
+      askPassPath,
+      options.signal,
+    );
 
     return await measureMirrorSize(finalPath, options.signal);
   } catch (error) {
