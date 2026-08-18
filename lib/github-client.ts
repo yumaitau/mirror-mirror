@@ -74,7 +74,70 @@ function findNextLink(linkHeader: string | null): string | null {
   return null;
 }
 
-function validatePageUrl(value: string, expectedPath: string): URL {
+/** Canonical id-based repository page path GitHub uses in its Link header. */
+const ORGANIZATION_PAGE_PATH = /^\/organizations\/(\d+)\/repos$/;
+
+/**
+ * Decide whether a next-page pathname is one this client may send the token to,
+ * and report which organization id it pins for the pages that follow.
+ *
+ * Two pathnames are legitimate, and no others:
+ *   - `expectedPath`, the initial name-based `/orgs/{org}/repos`
+ *   - the canonical id-based `/organizations/{id}/repos`, which is what GitHub
+ *     actually returns in its `Link` header (verified against the live API)
+ *
+ * Once an id has been seen, every later page must reuse that same id, so a
+ * mid-pagination switch to a different organization is refused. The name-based
+ * path stays acceptable throughout and never disturbs the pin, because it is the
+ * one path this client built itself.
+ *
+ * @param pathname             - pathname of the candidate next-page URL
+ * @param expectedPath         - the initial `/orgs/{org}/repos` path for this run
+ * @param pinnedOrganizationId - id seen on an earlier page, or null if none yet
+ * @returns the organization id to pin going forward (null when nothing has been
+ *          pinned yet and this page used the name-based path)
+ * @throws  Error("GitHub returned an unsafe pagination URL.") when the path is
+ *          neither legitimate shape
+ * @throws  Error("GitHub returned a pagination URL for a different
+ *          organization.") when the path names an organization other than the
+ *          one an earlier page already pinned
+ */
+function acceptPagePath(
+  pathname: string,
+  expectedPath: string,
+  pinnedOrganizationId: string | null,
+): string | null {
+  if (pathname === expectedPath) {
+    return pinnedOrganizationId;
+  }
+
+  const organizationId = ORGANIZATION_PAGE_PATH.exec(pathname)?.[1];
+  if (organizationId === undefined) {
+    throw new Error("GitHub returned an unsafe pagination URL.");
+  }
+  if (
+    pinnedOrganizationId !== null &&
+    organizationId !== pinnedOrganizationId
+  ) {
+    throw new Error(
+      "GitHub returned a pagination URL for a different organization.",
+    );
+  }
+  return organizationId;
+}
+
+/**
+ * Validate a next-page URL before it is fetched with the token attached.
+ *
+ * Transport checks (origin, credentials) are settled here. The path decision is
+ * delegated to {@link acceptPagePath}, which also carries the organization-id
+ * pinning rule across pages.
+ */
+function validatePageUrl(
+  value: string,
+  expectedPath: string,
+  pinnedOrganizationId: string | null,
+): { url: URL; organizationId: string | null } {
   let url: URL;
   try {
     url = new URL(value);
@@ -85,12 +148,19 @@ function validatePageUrl(value: string, expectedPath: string): URL {
     url.protocol !== "https:" ||
     url.host !== "api.github.com" ||
     url.username !== "" ||
-    url.password !== "" ||
-    url.pathname !== expectedPath
+    url.password !== ""
   ) {
     throw new Error("GitHub returned an unsafe pagination URL.");
   }
-  return url;
+
+  return {
+    url,
+    organizationId: acceptPagePath(
+      url.pathname,
+      expectedPath,
+      pinnedOrganizationId,
+    ),
+  };
 }
 
 function httpError(response: Response): Error {
@@ -120,6 +190,7 @@ export async function listOrganizationRepositories(
   );
   const authorization = `Bearer ${config.token}`;
   const visited = new Set<string>();
+  let pinnedOrganizationId: string | null = null;
   const repositories: DiscoveredRepository[] = [];
   const repositoryIds = new Set<number>();
 
@@ -171,7 +242,13 @@ export async function listOrganizationRepositories(
       if (!nextLink) {
         return repositories;
       }
-      pageUrl = validatePageUrl(nextLink, expectedPath);
+      const nextPage = validatePageUrl(
+        nextLink,
+        expectedPath,
+        pinnedOrganizationId,
+      );
+      pageUrl = nextPage.url;
+      pinnedOrganizationId = nextPage.organizationId;
     }
   } catch (error) {
     throw new Error(sanitizeError(error, [config.token, authorization]));

@@ -236,6 +236,90 @@ describe("GitHub discovery", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("follows GitHub's canonical id-based pagination link", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          [
+            {
+              id: 1,
+              name: "one",
+              full_name: "YumaIT/one",
+              clone_url: "https://github.com/YumaIT/one.git",
+            },
+          ],
+          {
+            headers: {
+              Link: '<https://api.github.com/organizations/9950313/repos?type=all&per_page=100&page=2>; rel="next", <https://api.github.com/organizations/9950313/repos?type=all&per_page=100&page=3>; rel="last"',
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          [
+            {
+              id: 2,
+              name: "two",
+              full_name: "YumaIT/two",
+              clone_url: "https://github.com/YumaIT/two.git",
+            },
+          ],
+          {
+            headers: {
+              Link: '<https://api.github.com/organizations/9950313/repos?type=all&per_page=100&page=1>; rel="prev", <https://api.github.com/organizations/9950313/repos?type=all&per_page=100&page=3>; rel="next"',
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json([
+          {
+            id: 3,
+            name: "three",
+            full_name: "YumaIT/three",
+            clone_url: "https://github.com/YumaIT/three.git",
+          },
+        ]),
+      );
+
+    await expect(
+      listOrganizationRepositories(
+        { organization: "YumaIT", token: "secret-token" },
+        fetchImpl,
+      ),
+    ).resolves.toHaveLength(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects a pagination link that switches to another organization id", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json([], {
+          headers: {
+            Link: '<https://api.github.com/organizations/9950313/repos?type=all&per_page=100&page=2>; rel="next"',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json([], {
+          headers: {
+            Link: '<https://api.github.com/organizations/6154722/repos?type=all&per_page=100&page=3>; rel="next"',
+          },
+        }),
+      );
+
+    await expect(
+      listOrganizationRepositories(
+        { organization: "YumaIT", token: "secret-token" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow("pagination URL for a different organization");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ["non-array page", () => Response.json({ repositories: [] })],
     ["invalid JSON", () => new Response("{", { status: 200 })],
