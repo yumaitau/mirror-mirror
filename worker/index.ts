@@ -11,46 +11,46 @@ async function main(): Promise<void> {
   const store = openStore(config.dataDir);
   const mode = process.argv[2];
 
-  if (mode === "--check-config") {
-    store.close();
-    return;
-  }
-  if (mode === "--healthcheck") {
-    const healthy = isWorkerHealthy(
-      store.getHealth(),
-      new Date(),
-      WORKER_STALE_AFTER_MS,
-    );
-    store.close();
-    if (!healthy) {
-      process.exitCode = 1;
-    }
-    return;
-  }
-  if (mode) {
-    store.close();
-    throw new Error(`Unknown worker option: ${mode}`);
-  }
-
-  const controller = new AbortController();
-  const stop = (): void => controller.abort();
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
-
   try {
-    await runWorker(
-      {
-        config,
-        store,
-        discover: () => listOrganizationRepositories(config),
-        mirror: (repository, signal) =>
-          syncMirror(repository, config, { signal }),
-      },
-      controller.signal,
-    );
+    if (mode === "--check-config") {
+      return;
+    }
+    if (mode === "--healthcheck") {
+      const healthy = isWorkerHealthy(
+        store.getHealth(),
+        new Date(),
+        WORKER_STALE_AFTER_MS,
+      );
+      if (!healthy) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    if (mode) {
+      throw new Error(`Unknown worker option: ${mode}`);
+    }
+
+    const controller = new AbortController();
+    const stop = (): void => controller.abort();
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+
+    try {
+      await runWorker(
+        {
+          config,
+          store,
+          discover: () => listOrganizationRepositories(config),
+          mirror: (repository, signal) =>
+            syncMirror(repository, config, { signal }),
+        },
+        controller.signal,
+      );
+    } finally {
+      process.removeListener("SIGINT", stop);
+      process.removeListener("SIGTERM", stop);
+    }
   } finally {
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
     store.close();
   }
 }

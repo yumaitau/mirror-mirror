@@ -94,7 +94,7 @@ The web health endpoint is `/api/health/web`. The worker has a distinct durable 
 
 ## Local development
 
-This project requires Node.js `24.15.0` or newer, Git, and Git LFS when the worker runs directly outside Docker.
+This project requires Node.js `24.15.0` or newer for the dashboard, Bun `1.4.0` or newer for the worker, Git, and Git LFS when the worker runs directly outside Docker.
 
 ```bash
 npm ci
@@ -102,12 +102,13 @@ cp .env.example .env
 npm run dev
 ```
 
-Run the worker in a second terminal after compiling it:
+Run the worker in a second terminal. Bun executes the TypeScript entrypoint directly; do not compile it with `tsc` or start `dist-worker`:
 
 ```bash
-npm run build:worker
-npm run worker
+bun --bun worker/index.ts
 ```
+
+`npm run worker` runs the same command when Bun is on `PATH`. Pass `--check-config` or `--healthcheck` after `--`, for example `npm run worker -- --check-config`. The web UI still uses `npm run build` / `npm start` on Node.
 
 Tests and quality checks:
 

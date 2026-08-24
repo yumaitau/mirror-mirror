@@ -39,14 +39,14 @@ services:
       context: .
     init: true
     restart: unless-stopped
-    command: ["node", "dist-worker/worker/index.js"]
+    command: ["bun", "--bun", "worker/index.ts"]
     environment: *mirrormirror-environment
     volumes:
       - type: bind
         source: ${MIRROR_HOST_PATH:-./mirror-data}
         target: /data
     healthcheck:
-      test: ["CMD", "setpriv", "--reuid=node", "--regid=node", "--init-groups", "--", "node", "dist-worker/worker/index.js", "--healthcheck"]
+      test: ["CMD", "setpriv", "--reuid=node", "--regid=node", "--init-groups", "--", "bun", "--bun", "worker/index.ts", "--healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
