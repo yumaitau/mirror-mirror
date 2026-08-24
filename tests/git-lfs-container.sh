@@ -111,9 +111,10 @@ object_path() {
 
 run_sync() {
   DATA_DIR="$data_directory" CLONE_URL="$upstream_url" \
-    GITHUB_TOKEN_VALUE="container-pat-do-not-leak" node -e '
-const { syncMirror } = require("/app/dist-worker/lib/git-mirror.js");
-syncMirror(
+    GITHUB_TOKEN_VALUE="container-pat-do-not-leak" bun --bun -e '
+import { syncMirror } from "/app/lib/git-mirror.ts";
+
+const size = await syncMirror(
   {
     repositoryId: 42,
     fullName: "YumaIT/lfs-container",
@@ -126,13 +127,8 @@ syncMirror(
     gitOperationTimeoutMs: 10_000,
   },
   { askPassPath: "/app/scripts/git-askpass.sh" },
-).then(
-  (size) => process.stdout.write(String(size)),
-  (error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  },
 );
+process.stdout.write(String(size));
 '
 }
 
