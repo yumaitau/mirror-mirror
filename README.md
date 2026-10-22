@@ -94,7 +94,7 @@ The web health endpoint is `/api/health/web`. The worker has a distinct durable 
 
 ## Local development
 
-This project requires Node.js `24.15.0` or newer for the dashboard, Bun `1.4.0` or newer for the worker, Git, and Git LFS when the worker runs directly outside Docker.
+This project requires Node.js `24.22.1` or newer for the dashboard, Bun `1.4.0` or newer for the worker, Git, and Git LFS when the worker runs directly outside Docker.
 
 ```bash
 npm ci
